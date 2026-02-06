@@ -1,0 +1,17 @@
+# Entornos virtuales
+.venv/
+venv/
+.venv*/
+**/.venv*/
+**/venv*/
+
+# Python
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# Audios pesados
+*.mp3
+*.wav

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IA SD — Dashboard</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 24px; background: #0b0b0b; color: #eee; }
+    .card { max-width: 980px; margin: 0 auto; background:#141414; padding:20px; border-radius:16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.08); }
+    h1 { margin: 0 0 10px; font-size: 22px; }
+    .sub { opacity: .8; margin-bottom: 14px; display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .pill { display:inline-block; padding:4px 10px; border-radius:999px; background:#222; }
+    .ok { color: #7CFF7C; }
+    .bad { color: #FF7C7C; }
+
+    .tabs{display:flex; gap:10px; flex-wrap:wrap; margin:10px 0 16px;}
+    .tab{cursor:pointer; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.05); color:#eee;
+         border-radius:999px; padding:8px 12px; font-weight:800;}
+    .tab.active{background:#7cf7d4; color:#0b0b0b; border:0;}
+
+    table { width:100%; border-collapse: collapse; overflow:hidden; border-radius: 12px; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid rgba(255,255,255,.08); text-align:left; }
+    th { background: rgba(255,255,255,.06); font-weight: 650; }
+    tr:hover td { background: rgba(255,255,255,.03); }
+    .right { text-align:right; }
+
+    .videos{margin-top:18px; padding-top:16px; border-top:1px solid rgba(255,255,255,.08);}
+    .row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;}
+    input{padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:#101010; color:#fff;}
+    button{padding:10px 14px; border-radius:12px; border:0; font-weight:900; cursor:pointer;}
+    .btnAdd{background:#ff77c8; color:#0b0b0b;}
+    .btnDel{background:#7cf7d4; color:#0b0b0b;}
+
+    .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px;}
+    .vcard{background:#101010;border:1px solid rgba(255,255,255,.10);border-radius:14px;padding:12px;box-shadow:0 10px 20px rgba(0,0,0,.25);}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>IA SD — Dashboard / Ranking</h1>
+
+    <div class="sub">
+      <div>
+        Estado: <span id="status" class="pill">cargando…</span>
+      </div>
+      <div>
+        Actualiza cada <b>1s</b> | Fuente: <span class="pill">GET /ranking</span> | Última: <span id="ts">—</span>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-game="fruit_ninja">🍉 Fruit Ninja</div>
+      <div class="tab" data-game="smile_battle">🙂 Smile Battle</div>
+      <div class="tab" data-game="rps">✌️ RPS</div>
+    </div>
+
+    <div style="opacity:.85;margin-bottom:10px;">
+      Juego seleccionado: <span class="pill" id="gamePill">fruit_ninja</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Jugador</th>
+          <th class="right">Mejor Score</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="3" style="opacity:.7">Cargando…</td></tr>
+      </tbody>
+    </table>
+
+    <div class="videos">
+      <h2 style="margin:0 0 10px;">🎬 Videos para hacer reír</h2>
+
+      <div class="row">
+        <input id="vTitle" placeholder="Título (ej: Meme 1)" style="flex:1; min-width:180px;">
+        <input id="vUrl" placeholder="Link YouTube (watch / youtu.be / shorts)" style="flex:2; min-width:260px;">
+        <button id="vAdd" class="btnAdd">Agregar</button>
+      </div>
+
+      <div id="videoList" class="grid"></div>
+    </div>
+
+  </div>
+
+  <script>
+    const SERVER = "http://127.0.0.1:8000";
+    let GAME = "fruit_ninja";
+
+    const rowsEl = document.getElementById("rows");
+    const statusEl = document.getElementById("status");
+    const tsEl = document.getElementById("ts");
+    const gamePill = document.getElementById("gamePill");
+
+    const videoListEl = document.getElementById("videoList");
+    const vTitleEl = document.getElementById("vTitle");
+    const vUrlEl = document.getElementById("vUrl");
+    const vAddEl = document.getElementById("vAdd");
+
+    function setStatus(ok, text){
+      statusEl.textContent = text;
+      statusEl.className = "pill " + (ok ? "ok" : "bad");
+    }
+
+    function bestByPlayer(list){
+      // list ya viene con (player, game, score) pero igual filtramos
+      const best = new Map();
+      for (const r of list){
+        if (!r || r.game !== GAME) continue;
+        const p = r.player ?? "unknown";
+        const s = Number(r.score ?? 0);
+        const prev = best.get(p);
+        if (prev === undefined || s > prev) best.set(p, s);
+      }
+      return Array.from(best.entries()).map(([player, score]) => ({ player, score }));
+    }
+
+    async function refresh(){
+      try{
+        const res = await fetch(`${SERVER}/ranking`, { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+
+        const data = await res.json();
+        const list = Array.isArray(data.ranking) ? data.ranking : [];
+
+        const best = bestByPlayer(list)
+          .sort((a,b) => b.score - a.score)
+          .slice(0, 10);
+
+        rowsEl.innerHTML = "";
+        if (best.length === 0){
+          rowsEl.innerHTML = `<tr><td colspan="3" style="opacity:.7">No hay scores todavía en <b>${GAME}</b>.</td></tr>`;
+        } else {
+          best.forEach((r, i) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+              <td>${i+1}</td>
+              <td>${r.player}</td>
+              <td class="right"><b>${r.score}</b></td>
+            `;
+            rowsEl.appendChild(tr);
+          });
+        }
+
+        setStatus(true, "online ✅");
+        tsEl.textContent = new Date().toLocaleTimeString();
+      } catch (e){
+        setStatus(false, "offline ❌");
+      }
+    }
+
+    // Tabs
+    document.querySelectorAll(".tab").forEach(t => {
+      t.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+        t.classList.add("active");
+        GAME = t.getAttribute("data-game");
+        gamePill.textContent = GAME;
+        refresh();
+      });
+    });
+
+    // Videos
+    async function loadVideos(){
+      try{
+        const res = await fetch(`${SERVER}/videos`, { cache:"no-store" });
+        const data = await res.json();
+        const vids = Array.isArray(data.videos) ? data.videos : [];
+
+        videoListEl.innerHTML = "";
+        if (vids.length === 0){
+          videoListEl.innerHTML = `<div style="opacity:.75">No hay videos guardados todavía.</div>`;
+          return;
+        }
+
+        vids.sort((a,b) => (b.ts||0) - (a.ts||0));
+
+        for (const v of vids){
+          const card = document.createElement("div");
+          card.className = "vcard";
+          card.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <div style="font-weight:900">${(v.title||"Video")}</div>
+              <button class="btnDel" data-id="${v.id}">Borrar</button>
+            </div>
+            <div style="margin-top:10px;border-radius:12px;overflow:hidden;">
+              <iframe width="100%" height="180"
+                src="https://www.youtube.com/embed/${v.id}"
+                title="YouTube video"
+                frameborder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowfullscreen>
+              </iframe>
+            </div>
+          `;
+          videoListEl.appendChild(card);
+        }
+
+        videoListEl.querySelectorAll("button[data-id]").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-id");
+            await fetch(`${SERVER}/videos/${id}`, { method:"DELETE" });
+            loadVideos();
+          });
+        });
+
+      } catch(e){
+        videoListEl.innerHTML = `<div style="opacity:.75">No pude cargar videos (server offline).</div>`;
+      }
+    }
+
+    vAddEl.addEventListener("click", async () => {
+      const title = (vTitleEl.value || "").trim() || "Video";
+      const url = (vUrlEl.value || "").trim();
+      if (!url){ alert("Pon el link de YouTube"); return; }
+
+      const res = await fetch(`${SERVER}/videos`, {
+        method:"POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ title, url })
+      });
+
+      const data = await res.json();
+      if (data.saved){
+        vTitleEl.value = "";
+        vUrlEl.value = "";
+        loadVideos();
+      } else {
+        alert(data.error || "No se pudo guardar");
+      }
+    });
+
+    // init
+    refresh();
+    loadVideos();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>
