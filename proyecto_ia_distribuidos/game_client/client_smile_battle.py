@@ -178,7 +178,6 @@ def parse_faces_from_ia(resp, frame_w, frame_h):
             y1 = int(clamp(y1n, 0.0, 1.0) * frame_h)
             x2 = int(clamp(x2n, 0.0, 1.0) * frame_w)
             y2 = int(clamp(y2n, 0.0, 1.0) * frame_h)
-            # asegura tamaño mínimo
             x2 = max(x2, x1 + 2)
             y2 = max(y2, y1 + 2)
             smile_score = f.get("smile_score", None)
@@ -190,7 +189,7 @@ def parse_faces_from_ia(resp, frame_w, frame_h):
         except Exception:
             continue
 
-    faces_out.sort(key=lambda ff: ff.center_x)  # izquierda -> derecha
+    faces_out.sort(key=lambda ff: ff.center_x)
     return faces_out
 
 
@@ -233,8 +232,6 @@ class SmileNormalizer:
         base = self.base_left if side == "left" else self.base_right
         if base is None:
             return 0.0
-
-        # Sensibilidad: sube si marca muy alto; baja si no detecta
         sensitivity = 0.22
         pct = ((score - base) / (base * sensitivity)) * 100.0
         return clamp(pct, 0.0, 150.0)
@@ -251,18 +248,16 @@ def send_record_to_server(winner, loser, reason, avg_left, avg_right, duration_s
     if requests is None:
         return
 
-    url = GAME_SERVER_URL.rstrip("/") + SCORE_ENDPOINT  # ✅ /score
+    url = GAME_SERVER_URL.rstrip("/") + SCORE_ENDPOINT
 
     if winner == "tie":
         return
 
-    # Decide promedio del ganador según si es izquierda/derecha
     if winner == name_left:
         winner_avg = avg_left
     elif winner == name_right:
         winner_avg = avg_right
     else:
-        # fallback por si el nombre cambió raro
         winner_avg = min(avg_left, avg_right)
 
     score = int(max(0, min(100, round(100 - float(winner_avg)))))
@@ -289,7 +284,6 @@ def send_record_to_server(winner, loser, reason, avg_left, avg_right, duration_s
         print("[SmileBattle] EXCEPTION enviando score:", e)
 
 
-
 # =========================
 # States
 # =========================
@@ -303,22 +297,59 @@ STATE_GAMEOVER = "gameover"
 
 
 def main():
+    global WIN_W, WIN_H  # ✅ para poder actualizar tamaño en resize
+
     pygame.init()
     try:
         pygame.mixer.init()
     except Exception:
         pass
 
-    screen = pygame.display.set_mode((WIN_W, WIN_H))
+    # ✅ Ventana redimensionable (permite maximizar)
+    screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.RESIZABLE)
     pygame.display.set_caption("Smile Battle")
     clock = pygame.time.Clock()
 
-    menu_img = pygame.transform.smoothscale(load_image(IMG_MENU), (WIN_W, WIN_H))
-    rules_img = pygame.transform.smoothscale(load_image(IMG_RULES_TEXT), (WIN_W, WIN_H))
-    ready_img = pygame.transform.smoothscale(load_image(IMG_READY), (WIN_W, WIN_H))
-    letsgo_img = pygame.transform.smoothscale(load_image(IMG_LETSGO), (WIN_W, WIN_H))
-    gameover_img = pygame.transform.smoothscale(load_image(IMG_GAMEOVER), (WIN_W, WIN_H))
-    cam_bg = pygame.transform.smoothscale(load_image(IMG_CAM_BG), (WIN_W, WIN_H))
+    # ---- helper para recalcular todo cuando cambia tamaño ----
+    def rebuild_layout():
+        nonlocal screen
+        nonlocal menu_img, rules_img, ready_img, letsgo_img, gameover_img, cam_bg
+        nonlocal BUBBLE_LEFT, BUBBLE_RIGHT, BAR_LEFT, BAR_RIGHT, timer_pos
+        nonlocal ph_left, ph_right
+
+        screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.RESIZABLE)
+
+        # reescalar fondos
+        menu_img = pygame.transform.smoothscale(load_image(IMG_MENU), (WIN_W, WIN_H))
+        rules_img = pygame.transform.smoothscale(load_image(IMG_RULES_TEXT), (WIN_W, WIN_H))
+        ready_img = pygame.transform.smoothscale(load_image(IMG_READY), (WIN_W, WIN_H))
+        letsgo_img = pygame.transform.smoothscale(load_image(IMG_LETSGO), (WIN_W, WIN_H))
+        gameover_img = pygame.transform.smoothscale(load_image(IMG_GAMEOVER), (WIN_W, WIN_H))
+        cam_bg = pygame.transform.smoothscale(load_image(IMG_CAM_BG), (WIN_W, WIN_H))
+
+        # rects UI (proporcionales)
+        BUBBLE_LEFT  = pygame.Rect(int(WIN_W*0.08), int(WIN_H*0.12), int(WIN_W*0.36), int(WIN_H*0.42))
+        BUBBLE_RIGHT = pygame.Rect(int(WIN_W*0.56), int(WIN_H*0.12), int(WIN_W*0.36), int(WIN_H*0.42))
+
+        BAR_LEFT  = pygame.Rect(int(WIN_W*0.12), int(WIN_H*0.70), int(WIN_W*0.32), int(WIN_H*0.05))
+        BAR_RIGHT = pygame.Rect(int(WIN_W*0.56), int(WIN_H*0.70), int(WIN_W*0.32), int(WIN_H*0.05))
+
+        timer_pos = (WIN_W//2, int(WIN_H*0.08))
+
+        # placeholders con nuevo tamaño
+        ph_left = make_placeholder_surface((BUBBLE_LEFT.w, BUBBLE_LEFT.h), "PLAYER 1", "Acércate a la cámara")
+        ph_right = make_placeholder_surface((BUBBLE_RIGHT.w, BUBBLE_RIGHT.h), "PLAYER 2", "Acércate a la cámara")
+
+        return BUBBLE_LEFT, BUBBLE_RIGHT, BAR_LEFT, BAR_RIGHT, timer_pos, ph_left, ph_right
+
+    # inicializa variables "dummy" para poder usar rebuild_layout
+    menu_img = rules_img = ready_img = letsgo_img = gameover_img = cam_bg = None
+    BUBBLE_LEFT = BUBBLE_RIGHT = BAR_LEFT = BAR_RIGHT = None
+    timer_pos = None
+    ph_left = ph_right = None
+
+    # primera construcción
+    BUBBLE_LEFT, BUBBLE_RIGHT, BAR_LEFT, BAR_RIGHT, timer_pos, ph_left, ph_right = rebuild_layout()
 
     font_big = load_font(64)
     font_mid = load_font(36)
@@ -336,18 +367,6 @@ def main():
     name_left, name_right = load_player_names()
     normalizer = SmileNormalizer()
 
-    # UI rects
-    BUBBLE_LEFT = pygame.Rect(int(WIN_W*0.08), int(WIN_H*0.12), int(WIN_W*0.36), int(WIN_H*0.42))
-    BUBBLE_RIGHT = pygame.Rect(int(WIN_W*0.56), int(WIN_H*0.12), int(WIN_W*0.36), int(WIN_H*0.42))
-
-    BAR_LEFT = pygame.Rect(int(WIN_W*0.12), int(WIN_H*0.70), int(WIN_W*0.32), int(WIN_H*0.05))
-    BAR_RIGHT = pygame.Rect(int(WIN_W*0.56), int(WIN_H*0.70), int(WIN_W*0.32), int(WIN_H*0.05))
-
-    timer_pos = (WIN_W//2, int(WIN_H*0.08))
-
-    ph_left = make_placeholder_surface((BUBBLE_LEFT.w, BUBBLE_LEFT.h), "PLAYER 1", "Acércate a la cámara")
-    ph_right = make_placeholder_surface((BUBBLE_RIGHT.w, BUBBLE_RIGHT.h), "PLAYER 2", "Acércate a la cámara")
-
     state = STATE_MENU
     running = True
     paused = False
@@ -363,7 +382,6 @@ def main():
     time_left = ROUND_SECONDS
 
     # calib vars
-    calib_active = False
     calib_t0 = None
     base_left_samples = []
     base_right_samples = []
@@ -391,8 +409,7 @@ def main():
         sent_record = False
 
     def start_calibration():
-        nonlocal calib_active, calib_t0, base_left_samples, base_right_samples, paused
-        calib_active = True
+        nonlocal calib_t0, base_left_samples, base_right_samples, paused
         calib_t0 = None
         base_left_samples = []
         base_right_samples = []
@@ -440,6 +457,11 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+
+            # ✅ Resize / Maximizar
+            if event.type == pygame.VIDEORESIZE:
+                WIN_W, WIN_H = event.w, event.h
+                BUBBLE_LEFT, BUBBLE_RIGHT, BAR_LEFT, BAR_RIGHT, timer_pos, ph_left, ph_right = rebuild_layout()
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -538,7 +560,6 @@ def main():
 
         # -------- CALIB state --------
         if state == STATE_CALIB:
-            # Solo inicia el timer de calibración cuando hay 2 caras
             if not have_two:
                 calib_t0 = None
                 base_left_samples.clear()
@@ -552,11 +573,9 @@ def main():
                 pygame.display.flip()
                 continue
 
-            # ya hay 2 caras
             if calib_t0 is None:
                 calib_t0 = time.time()
 
-            # acumula muestras
             base_left_samples.append(face_left.smile_score)
             base_right_samples.append(face_right.smile_score)
 
@@ -567,7 +586,6 @@ def main():
             screen.blit(txt, (40, 40))
             draw_bar(screen, 40, 90, 420, 30, prog)
 
-            # termina calibración
             if elapsed >= CALIB_SECONDS and len(base_left_samples) >= CALIB_MIN_SAMPLES and len(base_right_samples) >= CALIB_MIN_SAMPLES:
                 base_l = float(np.median(np.array(base_left_samples)))
                 base_r = float(np.median(np.array(base_right_samples)))
@@ -582,7 +600,6 @@ def main():
 
         # -------- PLAY state --------
         if state == STATE_PLAY:
-            # si falta cara, pausa (pero no negro)
             if not have_two:
                 paused = True
             if paused:
@@ -593,20 +610,16 @@ def main():
                 pygame.display.flip()
                 continue
 
-            # percents
             left_pct = normalizer.percent(face_left.smile_score, "left")
             right_pct = normalizer.percent(face_right.smile_score, "right")
 
-            # timer
             elapsed_round = time.time() - start_time
             time_left = int(max(0, ROUND_SECONDS - elapsed_round))
 
-            # averages
             left_sum += left_pct
             right_sum += right_pct
             sample_count += 1
 
-            # hold logic
             if left_pct >= SMILE_LIMIT_PERCENT:
                 round_left_hold += dt
             else:
@@ -617,7 +630,6 @@ def main():
             else:
                 round_right_hold = max(0.0, round_right_hold - dt * 1.5)
 
-            # labels + bars
             lbl1 = font_small.render(f"{name_left}  Smile: {int(left_pct)}%", True, (255, 255, 255))
             lbl2 = font_small.render(f"{name_right}  Smile: {int(right_pct)}%", True, (255, 255, 255))
             screen.blit(lbl1, (BAR_LEFT.x, BAR_LEFT.y - 30))
@@ -633,7 +645,6 @@ def main():
             hint = font_small.render("R=Restart   N=Names   SPACE=Pause   ESC=Exit", True, (255, 255, 255))
             screen.blit(hint, (int(WIN_W*0.12), int(WIN_H*0.90)))
 
-            # decide gameover
             if round_left_hold >= SMILE_HOLD_LOSE_SECONDS:
                 decide_winner_smile_hold("left")
                 state = STATE_GAMEOVER
@@ -702,7 +713,6 @@ def main():
                         name_left=name_left,
                         name_right=name_right,
                     )
-
                 sent_record = True
 
             pygame.display.flip()
