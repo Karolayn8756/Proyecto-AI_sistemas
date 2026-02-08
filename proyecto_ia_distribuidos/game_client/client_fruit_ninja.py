@@ -40,12 +40,12 @@ name_buffer = PLAYER_NAME if PLAYER_NAME else ""
 
 # ========= PATHS =========
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
-BG_PATH = os.path.join(ASSETS_DIR, "bg.jpg")
+BG_PATH = os.path.join(ASSETS_DIR, "bg.png")
 MUSIC_PATH = os.path.join(ASSETS_DIR, "bg_music.mp3")  # o .ogg o .wav
 
-SND_SLICE = os.path.join(ASSETS_DIR, "slice.wav")
-SND_BOOM  = os.path.join(ASSETS_DIR, "boom.wav")
-SND_COMBO = os.path.join(ASSETS_DIR, "combo.wav")
+SND_SLICE = os.path.join(ASSETS_DIR, "slice.mp3")
+SND_BOOM  = os.path.join(ASSETS_DIR, "boom.mp3")
+SND_COMBO = os.path.join(ASSETS_DIR, "combo.mp3")
 
 SPRITES = [
     ("banana",     os.path.join(ASSETS_DIR, "banana.png")),
@@ -85,10 +85,10 @@ CUT_COOLDOWN = 0.18
 SLASH_CUT = True
 CUT_SPEED = 720
 
-FRUIT_SCALE = 1.08
-BOMB_SCALE  = 1.02
-SPRITE_MAX_SIZE_FRUIT = 165
-SPRITE_MAX_SIZE_BOMB  = 155
+FRUIT_SCALE = 0.86
+BOMB_SCALE  = 0.82
+SPRITE_MAX_SIZE_FRUIT = 132
+SPRITE_MAX_SIZE_BOMB  = 124
 
 GAME_SECONDS = 60
 
@@ -233,7 +233,7 @@ class Fruit:
         self.alive = True
         self.sprite = sprite
         self.scale = scale
-        self.r = 34
+        self.r = 27
         self.last_cut_ts = 0.0
 
     def update(self, dt):
