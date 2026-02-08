@@ -18,6 +18,7 @@ GAME_SERVER_URL = "http://127.0.0.1:8000"
 # ================== PATHS ==================
 ROOT_DIR = os.path.dirname(__file__)
 ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
+
 ASSETS_FRUIT_DIR = os.path.join(ASSETS_DIR, "fruit")
 
 ASSET_SEARCH_DIRS = [
@@ -28,6 +29,7 @@ ASSET_SEARCH_DIRS = [
 ]
 
 def find_asset(filename: str) -> str:
+    """Busca un archivo en varias carpetas. Devuelve path o ''."""
     for d in ASSET_SEARCH_DIRS:
         p = os.path.join(d, filename)
         if os.path.exists(p):
@@ -87,7 +89,7 @@ PLAYER_NAME = load_player_name()
 # ================== CAMERA ==================
 CAM_W, CAM_H = 640, 480
 
-# ✅ DSHOW reduce warnings MSMF en Windows
+# DSHOW reduce warnings MSMF en Windows
 cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
@@ -96,8 +98,8 @@ WIN = "Fruit Ninja - PUCE M"
 cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
 
 # ================== IA THREAD ==================
-# Equilibrado: fluido sin saturar
-IA_FPS = 22
+# Más fluido (sin trabarse)
+IA_FPS = 24
 IA_TIMEOUT = 1.2
 
 ai_q = queue.Queue(maxsize=1)
@@ -105,41 +107,10 @@ ai_lock = threading.Lock()
 ai_last = None
 
 def bgr_to_b64jpg(bgr):
-    ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
+    ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
     if not ok:
         return None
     return base64.b64encode(buf).decode("utf-8")
-
-def _sanitize_ai(data):
-    """Evita que se quede pegado el último punto cuando no hay mano."""
-    if not isinstance(data, dict):
-        return data
-
-    # timestamp de recepción (sirve para depurar / latencia)
-    data["_rx_ts"] = time.time()
-
-    # flags típicos (si tu IA los manda)
-    if data.get("hand_detected") is False or data.get("hand_present") is False:
-        data["hand_point"] = None
-        data["hand_landmarks"] = None
-        return data
-
-    lm = data.get("hand_landmarks")
-    # si landmarks viene vacío/None => NO HAY MANO (aunque hand_point venga viejo)
-    if lm is None or (isinstance(lm, list) and len(lm) == 0):
-        data["hand_point"] = None
-
-    # si hay confidence/score y es bajo, lo apagamos
-    conf = data.get("hand_confidence")
-    if conf is not None:
-        try:
-            if float(conf) < 0.55:
-                data["hand_point"] = None
-                data["hand_landmarks"] = None
-        except Exception:
-            pass
-
-    return data
 
 def ai_worker():
     global ai_last
@@ -149,9 +120,12 @@ def ai_worker():
         if item is None:
             break
         try:
-            r = session.post(IA_URL, json={"image_b64": item, "session_id": "fruit"}, timeout=IA_TIMEOUT)
+            r = session.post(
+                IA_URL,
+                json={"image_b64": item, "session_id": "fruit"},
+                timeout=IA_TIMEOUT
+            )
             data = r.json()
-            data = _sanitize_ai(data)
         except Exception:
             data = None
         with ai_lock:
@@ -160,7 +134,7 @@ def ai_worker():
 threading.Thread(target=ai_worker, daemon=True).start()
 
 def ai_push_frame(frame_bgr):
-    # ✅ más pequeño = menos lag
+    # Más pequeño = menos lag
     small = cv2.resize(frame_bgr, (432, 324), interpolation=cv2.INTER_AREA)
     img_b64 = bgr_to_b64jpg(small)
     if img_b64 is None:
@@ -260,6 +234,7 @@ def normalize_sprite(sprite, max_size=140):
     return cv2.resize(sprite, (nw, nh), interpolation=cv2.INTER_AREA)
 
 def overlay_rgba(dst_bgr, sprite_rgba, x, y, scale=1.0):
+    """Dibuja sprite en dst_bgr. Si sprite se sale, OpenCV lo recorta (perfecto para ROI)."""
     if sprite_rgba is None:
         return 30
 
@@ -313,8 +288,12 @@ IMG_READY  = load_screen(P_READY)
 IMG_CAM_UI = load_screen(P_CAM_UI)
 IMG_GAMEOV = load_screen(P_GAMEOV)
 
-# ================== ROI DETECTION ==================
+# ================== ROI DETECTION (rectángulo blanco en CAMARAS.png) ==================
 def detect_white_roi(cam_ui_img):
+    """
+    Detecta el rectángulo blanco más grande (área de cámara) dentro de CAMARAS.png.
+    Devuelve (x, y, w, h) en coords de la imagen original.
+    """
     if cam_ui_img is None:
         return None
     gray = cv2.cvtColor(cam_ui_img, cv2.COLOR_BGR2GRAY)
@@ -346,7 +325,7 @@ def detect_white_roi(cam_ui_img):
 
 CAM_ROI_ORIG = detect_white_roi(IMG_CAM_UI)
 
-# ================== WINDOW RESIZE ==================
+# ================== WINDOW RESIZE (sin errores de canales) ==================
 def resize_to_window(img, ww, wh):
     if img is None:
         canvas = np.zeros((wh, ww, 3), dtype=np.uint8)
@@ -406,30 +385,30 @@ def draw_badge(frame, label, value, x, y, w, h, ui=1.0, accent=(255, 0, 255)):
     draw_text(frame, f"{label}", x + int(10 * ui), y + int(18 * ui), scale=0.70 * ui, color=(255, 255, 255), thick=2)
     draw_text(frame, f"{value}", x + int(10 * ui), y + int(56 * ui), scale=0.95 * ui, color=(0, 255, 200), thick=2)
 
-# ================== GAME PHYSICS (balanceado) ==================
-# Si quieres MÁS rápido: sube GRAVITY a 380 o TIME_SCALE a 0.95
-TIME_SCALE = 0.88
-GRAVITY = 340
-AIR_FRICTION = 0.997
-MAX_FALL_SPEED = 520
+# ================== GAME PHYSICS ==================
+# Equilibrio: ni lento ni rápido
+TIME_SCALE = 0.90
+GRAVITY = 520
+AIR_FRICTION = 0.998
+MAX_FALL_SPEED = 720
 
-# Spawn (más frutas sin exagerar)
+# Más frutas, intercaladas
 SPAWN_MIN = 0.28
-SPAWN_MAX = 0.55
+SPAWN_MAX = 0.52
 
 BOMB_CHANCE = 0.10
 
-# Intercalado: frecuentemente 2 frutas, a veces 3
+# A veces salen 2 o 3
 BURST_CHANCE = 0.65
-BURST_WEIGHTS = [35, 45, 20]  # 1,2,3
+BURST_WEIGHTS = [45, 40, 15]  # 1,2,3
 
-# Cortes
+# Corte más fácil (menos “paso encima y no corta”)
 TOUCH_CUT = True
 CUT_PADDING = 44
 CUT_COOLDOWN = 0.06
 
 SLASH_CUT = True
-CUT_SPEED = 560
+CUT_SPEED = 540
 SLASH_EXTRA_PAD = 26
 
 FRUIT_SCALE = 0.90
@@ -485,27 +464,24 @@ class Fruit:
         self.vx *= AIR_FRICTION
         self.vy *= AIR_FRICTION
 
-# ================== SPAWN (intercalado) ==================
-spawn_index = 0  # para alternar frutas
-
-def spawn_item(roi_x, roi_y, roi_w, roi_h, fruit_sprites, bomb_sprite):
-    global spawn_index
-
-    x = random.randint(roi_x + 70, roi_x + roi_w - 70)
-    y = random.randint(roi_y - 280, roi_y - 130)
+def spawn_item(rw, rh, fruit_sprites, bomb_sprite):
+    """
+    IMPORTANTÍSIMO:
+    Spawn en coordenadas LOCALES del ROI (0..rw, 0..rh).
+    Así las frutas SOLO existen dentro de la cámara.
+    """
+    x = random.randint(60, max(61, rw - 60))
+    y = random.randint(-260, -120)
 
     vx = random.uniform(-170, 170)
-    vy = random.uniform(-920, -720)  # más tiempo en pantalla
+    vy = random.uniform(-980, -760)
     s = random.uniform(0.90, 1.18)
 
-    # bomba (random)
     if random.random() < BOMB_CHANCE:
         return Fruit(x, y, vx * 0.70, vy, kind="bomb", sprite=bomb_sprite, scale=s * BOMB_SCALE)
-
-    # fruta intercalada (no siempre random puro)
-    sp = fruit_sprites[spawn_index % len(fruit_sprites)][1]
-    spawn_index += 1
-    return Fruit(x, y, vx, vy, kind="fruit", sprite=sp, scale=s * FRUIT_SCALE)
+    else:
+        _, sp = random.choice(fruit_sprites)
+        return Fruit(x, y, vx, vy, kind="fruit", sprite=sp, scale=s * FRUIT_SCALE)
 
 # ================== SMOOTH TIP ==================
 class EMA2D:
@@ -529,12 +505,12 @@ class EMA2D:
 def clamp_int(v, a, b):
     return int(max(a, min(b, v)))
 
+# Cuando NO hay mano: NO queremos que se quede el punto.
+# Hold corto para evitar parpadeo, pero si se pierde la mano, desaparece rápido.
+TIP_HOLD_MS = 90
 tip_ema = EMA2D(alpha=0.62)
-
-# 🔥 clave para que NO se quede el punto:
-# Si en X segundos no vemos mano real, borramos TODO.
-HAND_LOST_TIMEOUT = 0.12
-last_hand_seen_ts = 0.0
+last_tip_local = None
+last_tip_ts = 0.0
 
 # ================== GAME STATE MACHINE ==================
 STATE_START = "START"
@@ -568,6 +544,7 @@ game_over = False
 score_sent = False
 start_time = time.time()
 
+# Trail LOCAL al ROI
 trail = deque(maxlen=18)
 prev_tip = None
 prev_tip_t = None
@@ -583,7 +560,7 @@ prev_frame_t = time.time()
 def reset_game():
     global items, last_spawn, spawn_every, score, combo, last_cut_time, game_over, score_sent
     global start_time, trail, prev_tip, prev_tip_t, tip_speed
-    global last_hand_seen_ts, spawn_index
+    global last_tip_local, last_tip_ts
 
     items = []
     last_spawn = time.time()
@@ -601,8 +578,8 @@ def reset_game():
     tip_speed = 0.0
 
     tip_ema.reset()
-    last_hand_seen_ts = 0.0
-    spawn_index = 0
+    last_tip_local = None
+    last_tip_ts = 0.0
 
 def do_cut(it, now, points):
     global score, combo, last_cut_time
@@ -632,7 +609,7 @@ while True:
 
     now = time.time()
     dt = max(now - prev_frame_t, 1e-6)
-    dt = min(dt, 1 / 30.0)   # estable
+    dt = min(dt, 1 / 18.0)
     dt *= TIME_SCALE
     prev_frame_t = now
 
@@ -728,8 +705,12 @@ while True:
         roi = (int(ww * 0.14), int(wh * 0.18), int(ww * 0.72), int(wh * 0.60))
     rx, ry, rw, rh = roi
 
+    # Colocar cámara en ROI
     cam_fit = cv2.resize(cam, (rw, rh), interpolation=cv2.INTER_AREA)
     cam_ui_canvas[ry:ry + rh, rx:rx + rw] = cam_fit
+
+    # ¡CLAVE! Todo lo del juego se dibuja SOLO aquí
+    roi_view = cam_ui_canvas[ry:ry + rh, rx:rx + rw]
 
     # IA push
     if (not game_over) and (now - last_ai_send >= ai_every):
@@ -738,16 +719,18 @@ while True:
 
     data = ai_get_last()
 
+    # timer
     elapsed = int(now - start_time)
     remaining = max(0, GAME_SECONDS - elapsed)
     if remaining == 0 and (not game_over):
         game_over = True
 
+    # enviar score una sola vez
     if game_over and (not score_sent):
         send_score("fruit_ninja", score)
         score_sent = True
 
-    # Spawn
+    # Spawn (LOCAL al ROI)
     if (not game_over) and (now - last_spawn >= spawn_every):
         last_spawn = now
         spawn_every = random.uniform(SPAWN_MIN, SPAWN_MAX)
@@ -757,89 +740,100 @@ while True:
             burst = random.choices([1, 2, 3], weights=BURST_WEIGHTS, k=1)[0]
 
         for _ in range(burst):
-            items.append(spawn_item(rx, ry, rw, rh, fruit_sprites, bomb_sprite))
+            items.append(spawn_item(rw, rh, fruit_sprites, bomb_sprite))
 
-    # Update items
+    # Update items (LOCAL)
     for it in items:
         if it.alive:
             it.update(dt)
-            if it.y - it.r > (ry + rh + 110):
+            if it.y - it.r > (rh + 90):
                 it.alive = False
                 combo = 0
 
-    # ------------------ DEDO IA ------------------
-    tip = None
+    # ------------------ DEDO IA (LOCAL al ROI) ------------------
+    tip_local = None
     hand_ok = False
 
-    if (not game_over) and isinstance(data, dict):
+    if (not game_over) and data:
         hp = data.get("hand_point")
 
         # 1) x_ema/y_ema (preferido)
-        if isinstance(hp, dict) and (hp.get("x_ema") is not None) and (hp.get("y_ema") is not None):
-            tx = int(rx + float(hp["x_ema"]) * rw)
-            ty = int(ry + float(hp["y_ema"]) * rh)
-            tx = clamp_int(tx, rx, rx + rw - 1)
-            ty = clamp_int(ty, ry, ry + rh - 1)
+        if hp and (hp.get("x_ema") is not None) and (hp.get("y_ema") is not None):
+            hand_ok = True
+            tx = int(float(hp["x_ema"]) * rw)
+            ty = int(float(hp["y_ema"]) * rh)
+            tx = clamp_int(tx, 0, rw - 1)
+            ty = clamp_int(ty, 0, rh - 1)
 
             sx, sy = tip_ema.update(tx, ty)
-            tip = (int(sx), int(sy))
-            hand_ok = True
-            last_hand_seen_ts = now
+            tip_local = (int(sx), int(sy))
+
+            last_tip_local = tip_local
+            last_tip_ts = now
 
         else:
             # 2) fallback landmarks[8]
             lm = data.get("hand_landmarks")
-            if isinstance(lm, list) and len(lm) > 8 and ("x" in lm[8]) and ("y" in lm[8]):
-                rawx = int(rx + float(lm[8]["x"]) * rw)
-                rawy = int(ry + float(lm[8]["y"]) * rh)
-                rawx = clamp_int(rawx, rx, rx + rw - 1)
-                rawy = clamp_int(rawy, ry, ry + rh - 1)
+            if lm and len(lm) > 8 and ("x" in lm[8]) and ("y" in lm[8]):
+                hand_ok = True
+                rawx = int(float(lm[8]["x"]) * rw)
+                rawy = int(float(lm[8]["y"]) * rh)
+                rawx = clamp_int(rawx, 0, rw - 1)
+                rawy = clamp_int(rawy, 0, rh - 1)
 
                 sx, sy = tip_ema.update(rawx, rawy)
-                tip = (int(sx), int(sy))
-                hand_ok = True
-                last_hand_seen_ts = now
+                tip_local = (int(sx), int(sy))
 
-    # ✅ SI NO HAY MANO REAL POR X SEGUNDOS: BORRA TODO (punto y trail)
-    if (not hand_ok) and (now - last_hand_seen_ts > HAND_LOST_TIMEOUT):
-        tip = None
-        trail.clear()
-        prev_tip = None
-        prev_tip_t = None
-        tip_speed = 0.0
-        tip_ema.reset()
+                last_tip_local = tip_local
+                last_tip_ts = now
 
-    # trail + speed
-    if hand_ok and tip is not None:
-        trail.append(tip)
+    # HOLD corto anti-parpadeo (pero luego desaparece)
+    if (not hand_ok) and (last_tip_local is not None):
+        if ((now - last_tip_ts) * 1000.0) < TIP_HOLD_MS:
+            hand_ok = True
+            tip_local = last_tip_local
+        else:
+            # Ya no hay mano: se borra todo (tu pedido)
+            last_tip_local = None
+            trail.clear()
+            prev_tip = None
+            prev_tip_t = None
+            tip_speed = 0.0
+            tip_ema.reset()
+
+    # trail + speed (LOCAL)
+    if hand_ok and tip_local is not None:
+        trail.append(tip_local)
         if prev_tip is not None and prev_tip_t is not None:
             dtt = max(now - prev_tip_t, 1e-6)
-            dx = tip[0] - prev_tip[0]
-            dy = tip[1] - prev_tip[1]
+            dx = tip_local[0] - prev_tip[0]
+            dy = tip_local[1] - prev_tip[1]
             tip_speed = math.sqrt(dx * dx + dy * dy) / dtt
-        prev_tip = tip
+        prev_tip = tip_local
         prev_tip_t = now
+    else:
+        # si no hay mano: nada dibujado
+        tip_local = None
 
-    # ✅ Dibuja SOLO si hay mano (así jamás queda punto pegado)
-    if hand_ok and tip is not None:
+    # Trail SOLO en ROI (color magenta/cyan)
+    if tip_local is not None:
         for i in range(1, len(trail)):
-            cv2.line(cam_ui_canvas, trail[i - 1], trail[i], (255, 0, 255), 5, cv2.LINE_AA)   # magenta
-        cv2.circle(cam_ui_canvas, tip, 10, (0, 255, 200), -1, cv2.LINE_AA)                    # cyan
+            cv2.line(roi_view, trail[i - 1], trail[i], (255, 0, 255), 5, cv2.LINE_AA)
+        cv2.circle(roi_view, tip_local, 10, (0, 255, 200), -1, cv2.LINE_AA)
 
-    # Draw items
+    # Draw items SOLO en ROI (nunca se salen a la interfaz)
     for it in items:
         if not it.alive:
             continue
         cx, cy = int(it.x), int(it.y)
-        it.r = overlay_rgba(cam_ui_canvas, it.sprite, cx, cy, scale=it.scale)
+        it.r = overlay_rgba(roi_view, it.sprite, cx, cy, scale=it.scale)
 
-    # --------------- COLISIONES (MEJORADAS) ---------------
-    if (not game_over) and hand_ok and tip is not None and TOUCH_CUT:
-        tx, ty = tip
+    # Colisiones touch (LOCAL)
+    if (not game_over) and tip_local is not None and TOUCH_CUT:
+        tx, ty = tip_local
 
-        # padding dinámico por velocidad (si pasas rápido no falla)
         speed_boost = clamp(tip_speed / 900.0, 0.0, 1.0)
-        extra = int(20 * speed_boost)
+        extra = int(18 * speed_boost)
 
         for it in items:
             if not it.alive:
@@ -848,19 +842,9 @@ while True:
                 continue
 
             rr = (it.r + CUT_PADDING + extra)
-            hit = False
-
-            # 1) toque normal
             dist2 = (it.x - tx) ** 2 + (it.y - ty) ** 2
+
             if dist2 <= rr * rr:
-                hit = True
-
-            # 2) ✅ si te “saltas” por FPS, usa segmento prev_tip -> tip
-            if (not hit) and (prev_tip is not None):
-                if seg_circle_intersect(prev_tip, tip, (int(it.x), int(it.y)), rr):
-                    hit = True
-
-            if hit:
                 it.last_cut_ts = now
                 if it.kind == "bomb":
                     do_bomb()
@@ -868,26 +852,25 @@ while True:
                 else:
                     do_cut(it, now, 10)
 
-    # Slash cut (segmento trail) – también ayuda mucho
-    if (not game_over) and hand_ok and tip is not None and SLASH_CUT and len(trail) >= 2:
-        # activa slash con velocidad media
+    # Slash cut (LOCAL)
+    if (not game_over) and tip_local is not None and SLASH_CUT and len(trail) >= 2:
+        p1 = trail[-2]
+        p2 = trail[-1]
+
+        if len(trail) >= 3:
+            jump = (p2[0] - p1[0])**2 + (p2[1] - p1[1])**2
+            if jump > (160**2):
+                p1 = trail[-3]
+
         if tip_speed >= (CUT_SPEED * 0.75):
-            p1 = trail[-2]
-            p2 = trail[-1]
-
-            # si salto grande, usa punto anterior
-            if len(trail) >= 3:
-                jump = (p2[0] - p1[0])**2 + (p2[1] - p1[1])**2
-                if jump > (170**2):
-                    p1 = trail[-3]
-
-            pad = SLASH_EXTRA_PAD + int(clamp(tip_speed / 1000.0, 0.0, 1.0) * 18)
+            pad = SLASH_EXTRA_PAD + int(clamp(tip_speed / 1000.0, 0.0, 1.0) * 16)
 
             for it in items:
                 if not it.alive:
                     continue
                 if now - it.last_cut_ts < CUT_COOLDOWN:
                     continue
+
                 if seg_circle_intersect(p1, p2, (int(it.x), int(it.y)), it.r + pad):
                     it.last_cut_ts = now
                     if it.kind == "bomb":
@@ -896,11 +879,11 @@ while True:
                     else:
                         do_cut(it, now, 10)
 
-    # Limpia items
-    if len(items) > 75:
+    # Limpia lista
+    if len(items) > 80:
         items = [it for it in items if it.alive]
 
-    # HUD
+    # HUD (fuera del ROI, pero encima de la interfaz está bien)
     draw_badge(cam_ui_canvas, "SCORE", score, int(20 * ui), int(18 * ui), int(175 * ui), int(78 * ui), ui=ui, accent=(255, 0, 255))
     draw_badge(cam_ui_canvas, "TIME", remaining, int(210 * ui), int(18 * ui), int(175 * ui), int(78 * ui), ui=ui, accent=(0, 255, 200))
     draw_badge(cam_ui_canvas, "COMBO", f"x{combo}", int(400 * ui), int(18 * ui), int(190 * ui), int(78 * ui), ui=ui, accent=(255, 80, 0))
@@ -910,7 +893,7 @@ while True:
                   scale=1.15 * ui, color=(0, 255, 200), thick=3)
 
     # IA latency
-    if isinstance(data, dict):
+    if data:
         lat = data.get("latency_ms")
         if lat is not None:
             last_latency_ms = lat
@@ -921,13 +904,16 @@ while True:
     draw_text(cam_ui_canvas, f"PLAYER: {PLAYER_NAME}", int(20 * ui), wh - int(55 * ui),
               scale=0.78 * ui, color=(255, 255, 255), thick=2)
 
-    if (not hand_ok) and (not game_over):
+    # Si no hay mano: avisito (y ya NO queda el punto)
+    if (tip_local is None) and (not game_over):
         draw_text(cam_ui_canvas, "NO HAND DETECTED", int(rx + 20 * ui), int(ry + rh - 20 * ui),
                   scale=0.95 * ui, color=(0, 0, 255), thick=3)
 
     # GAME OVER overlay
     if game_over:
         over_canvas, _, _ = resize_to_window(IMG_GAMEOV, ww, wh)
+        if over_canvas is None:
+            over_canvas = cam_ui_canvas.copy()
         draw_text(over_canvas, f"TOTAL SCORE: {score}", ww // 2 - int(240 * ui), wh // 2 + int(80 * ui),
                   scale=1.15 * ui, color=(255, 255, 255), thick=3)
         draw_text(over_canvas, "R: reiniciar", ww // 2 - int(160 * ui), wh // 2 + int(130 * ui),
@@ -936,6 +922,7 @@ while True:
                   scale=0.95 * ui, color=(255, 255, 255), thick=2)
         draw_text(over_canvas, "ESC: salir", ww // 2 - int(140 * ui), wh // 2 + int(210 * ui),
                   scale=0.95 * ui, color=(255, 255, 255), thick=2)
+
         cv2.imshow(WIN, over_canvas)
     else:
         cv2.imshow(WIN, cam_ui_canvas)
