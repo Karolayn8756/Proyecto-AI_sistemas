@@ -733,7 +733,7 @@ def main():
 
                 cv2.rectangle(frame, (int(w*0.10), int(h*0.76)), (int(w*0.90), int(h*0.83)), (0,0,0), -1)
                 cv2.rectangle(frame, (int(w*0.10), int(h*0.76)), (int(w*0.90), int(h*0.83)), (255,255,255), 2)
-                draw_text(frame, msg, int(w*0.22), int(h*0.81), 1.35)
+                    #draw_text(frame, msg, int(w*0.22), int(h*0.81), 1.35)
 
             cv2.imshow(WIN, frame)
 
