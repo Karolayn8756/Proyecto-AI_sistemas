@@ -13,6 +13,14 @@ try:
 except Exception:
     requests = None
 
+# --- MUSICA (opcional) ---
+try:
+    import pygame
+    PYGAME_OK = True
+except Exception:
+    pygame = None
+    PYGAME_OK = False
+
 # =========================
 # URLs
 # =========================
@@ -23,7 +31,7 @@ GAME_ID = "rps"
 # =========================
 # Ventana
 # =========================
-WIN = "RPS KAWAII (VS IA)"
+WIN = "PIEDRA PAPEL TIJERA (VS IA)"
 cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
 
 CAM_W, CAM_H = 1280, 720
@@ -36,29 +44,33 @@ BEST_OF = 5  # gana el primero en 3
 IA_FPS = 10
 ai_every = 1.0 / IA_FPS
 
-# Fases por ronda (SOLO dentro del juego)
-PHASE_READY = 1.2
-PHASE_1 = 0.8
-PHASE_2 = 0.8
-PHASE_3 = 0.8
-PHASE_GO = 0.35
-PHASE_SHOW = 1.4
+# Fases por ronda (dentro del juego)
+PHASE_READY = 1.0
+PHASE_1 = 0.75
+PHASE_2 = 0.75
+PHASE_3 = 0.75
+PHASE_GO = 0.30
+PHASE_SHOW = 1.25
 
-HIST_GESTURE = 20
+HIST_GESTURE = 18
 
 # =========================
 # Assets
 # =========================
 ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets", "RPS")
 
-IMG_MENU = "menurps.png"
-IMG_RULES = "rules texto.png"
-IMG_RULES_LIST = "rules rpslista.png"
-IMG_AREYOUREADY = "areyouready rps.png"
-IMG_LETSGO = "Lestogorps.png"
-IMG_GAME = "game rps.png"
-IMG_GAMEOVER = "gameover rps.png"
-FONT_TTF = "font.ttf"
+IMG_START = "RPS_inicio.png"
+IMG_NAME = "RPS_NOMBRE.png"
+IMG_RULES = "Reglas.png"
+IMG_HANDPOS = "tu mano debe estar.png"
+IMG_LISTO = "RPS_Listo.png"
+IMG_GAME_BG = "camara_ai.png"          # tu fondo del juego con los marcos
+IMG_GAMEOVER_BG = "RESULTADO_Final.png"
+MUSIC_FILE = "bg_music.mp3"
+
+IMG_AI_ROCK = "manopiedra.png"
+IMG_AI_PAPER = "manopapel.png"
+IMG_AI_SCISSORS = "manotijeras.png"
 
 # Persist name
 NAMES_FILE = os.path.join(os.path.dirname(__file__), "rps_name.txt")
@@ -73,10 +85,10 @@ def load_name():
     try:
         if os.path.exists(NAMES_FILE):
             t = open(NAMES_FILE, "r", encoding="utf-8").read().strip()
-            return t if t else "PLAYER"
+            return t if t else ""
     except Exception:
         pass
-    return "PLAYER"
+    return ""
 
 def save_name(name):
     try:
@@ -88,8 +100,7 @@ def load_img(name):
     path = os.path.join(ASSET_DIR, name)
     if not os.path.exists(path):
         return None
-    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    return img
+    return cv2.imread(path, cv2.IMREAD_UNCHANGED)
 
 def alpha_blit(bg_bgr, fg_rgba, x, y, w=None, h=None):
     """Pega PNG con alpha sobre fondo BGR."""
@@ -124,6 +135,7 @@ def alpha_blit(bg_bgr, fg_rgba, x, y, w=None, h=None):
     bg_bgr[y:y2, x:x2] = out.astype(np.uint8)
 
 def draw_text(img, text, x, y, scale=1.0, color=(255,255,255), thick=2):
+    # Sombra negra para legibilidad
     cv2.putText(img, text, (int(x), int(y)),
                 cv2.FONT_HERSHEY_DUPLEX, float(scale),
                 (0,0,0), int(thick)+3, cv2.LINE_AA)
@@ -158,24 +170,31 @@ def send_score(player, score, extra=None):
         pass
 
 # =========================
-# IA parsing + hand utils
+# IA parsing + hand draw
 # =========================
-def infer_hand_landmarks(frame_bgr):
+def infer_from_ai(frame_bgr, session_id="default"):
+    """
+    Devuelve:
+      - hand_landmarks (lista de 21 o None)
+      - rps ("rock"/"paper"/"scissors"/"unknown"/None)
+      - latency_ms
+    """
     img_b64 = bgr_to_b64jpg(frame_bgr)
     if not img_b64:
-        return None, None
-    resp = post_json(IA_URL, {"image_b64": img_b64}, timeout=1.2)
+        return None, None, None
+
+    resp = post_json(IA_URL, {"image_b64": img_b64, "session_id": session_id}, timeout=1.2)
     if not isinstance(resp, dict):
-        return None, None
-    return resp.get("hand_landmarks"), resp.get("latency_ms")
+        return None, None, None
+
+    return resp.get("hand_landmarks"), resp.get("rps"), resp.get("latency_ms")
 
 def draw_landmarks(frame_bgr, lm, color=(0, 0, 255)):
-    """Dibuja puntos (como tu ejemplo). lm: lista de 21 puntos con x,y normalizados."""
+    """Dibuja puntos + conexiones (MediaPipe Hand)."""
     if not lm or not isinstance(lm, list):
         return
     h, w = frame_bgr.shape[:2]
 
-    # conexiones típicas (MediaPipe Hand)
     edges = [
         (0,1),(1,2),(2,3),(3,4),
         (0,5),(5,6),(6,7),(7,8),
@@ -200,59 +219,10 @@ def draw_landmarks(frame_bgr, lm, color=(0, 0, 255)):
     for (x, y) in pts:
         cv2.circle(frame_bgr, (x, y), 6, color, -1, cv2.LINE_AA)
 
-def fingers_up(lm):
-    """
-    Devuelve [thumb, index, middle, ring, pinky] como boolean.
-    Usamos comparaciones más robustas.
-    """
-    pts = [(float(p["x"]), float(p["y"]), float(p.get("z", 0.0))) for p in lm[:21]]
-
-    def up(tip, pip):
-        return pts[tip][1] < pts[pip][1] - 0.01  # margen
-
-    # dedos
-    index = up(8, 6)
-    middle = up(12, 10)
-    ring = up(16, 14)
-    pinky = up(20, 18)
-
-    # pulgar: separación horizontal (depende mano)
-    thumb = abs(pts[4][0] - pts[2][0]) > 0.045
-
-    return [thumb, index, middle, ring, pinky]
-
-def classify_rps(lm):
-    """
-    Mejor detección de TIJERA:
-    - Tijera: index y middle arriba, ring y pinky abajo
-    - Papel: 4 o 5 dedos arriba
-    - Piedra: 0-1 dedos arriba
-    """
-    if lm is None:
-        return "none"
-    thumb, idx, mid, ring, pinky = fingers_up(lm)
-
-    up_count = sum([thumb, idx, mid, ring, pinky])
-
-    # PAPEL: casi todo arriba
-    if up_count >= 4:
-        return "paper"
-
-    # TIJERA: idx+mid arriba, ring+pinky abajo (thumb no importa tanto)
-    if idx and mid and (not ring) and (not pinky):
-        return "scissors"
-
-    # PIEDRA: casi nada arriba
-    if up_count <= 1:
-        return "rock"
-
-    # fallback
-    if idx and mid:
-        return "scissors"
-    return "rock"
-
+# =========================
+# RPS logic
+# =========================
 GESTURES = ["rock", "paper", "scissors"]
-EMOJI = {"rock":"✊", "paper":"✋", "scissors":"✌️", "none":"—"}
 NAMEG = {"rock":"PIEDRA", "paper":"PAPEL", "scissors":"TIJERA", "none":"SIN MANO"}
 
 def decide_winner(player_move, ai_move):
@@ -266,40 +236,77 @@ def decide_winner(player_move, ai_move):
         return "player"
     return "ai"
 
+def stable_gesture(hist: deque):
+    if not hist:
+        return "none"
+    vals = [g for g in hist if g in ("rock", "paper", "scissors")]
+    if not vals:
+        return "none"
+    return max(set(vals), key=vals.count)
+
 # =========================
-# Game state machine (FIX BUG)
+# States
 # =========================
+STATE_START = "start"
 STATE_NAME = "name"
-STATE_MENU = "menu"
 STATE_RULES = "rules"
-STATE_READY = "ready"
-STATE_LETSGO = "letsgo"
+STATE_HANDPOS = "handpos"
+STATE_LISTO = "listo"
 STATE_PLAY = "play"
 STATE_GAMEOVER = "gameover"
 
 def needed_wins():
     return (BEST_OF // 2) + 1
 
-def stable_gesture(hist: deque):
-    if not hist:
-        return "none"
-    vals = [g for g in hist if g != "none"]
-    if not vals:
-        return "none"
-    return max(set(vals), key=vals.count)
+# =========================
+# Music
+# =========================
+def music_start(asset_dir):
+    if not PYGAME_OK:
+        return
+    try:
+        pygame.mixer.init()
+        music_path = os.path.join(asset_dir, MUSIC_FILE)
+        if os.path.exists(music_path):
+            pygame.mixer.music.load(music_path)
+            pygame.mixer.music.set_volume(0.45)
+            pygame.mixer.music.play(-1)  # loop
+    except Exception:
+        pass
+
+def music_stop():
+    if not PYGAME_OK:
+        return
+    try:
+        pygame.mixer.music.stop()
+    except Exception:
+        pass
 
 # =========================
 # Main
 # =========================
 def main():
     # Load assets
-    img_menu = load_img(IMG_MENU)
+    img_start = load_img(IMG_START)
+    img_name = load_img(IMG_NAME)
     img_rules = load_img(IMG_RULES)
-    img_rules_list = load_img(IMG_RULES_LIST)
-    img_ready = load_img(IMG_AREYOUREADY)
-    img_letsgo = load_img(IMG_LETSGO)
-    img_game = load_img(IMG_GAME)
-    img_gameover = load_img(IMG_GAMEOVER)
+    img_handpos = load_img(IMG_HANDPOS)
+    img_listo = load_img(IMG_LISTO)
+    img_game_bg = load_img(IMG_GAME_BG)
+    img_gameover_bg = load_img(IMG_GAMEOVER_BG)
+
+    img_ai_rock = load_img(IMG_AI_ROCK)
+    img_ai_paper = load_img(IMG_AI_PAPER)
+    img_ai_scissors = load_img(IMG_AI_SCISSORS)
+
+    ai_imgs = {
+        "rock": img_ai_rock,
+        "paper": img_ai_paper,
+        "scissors": img_ai_scissors,
+    }
+
+    # Start music
+    music_start(ASSET_DIR)
 
     # Camera
     cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
@@ -307,9 +314,11 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
     cap.set(cv2.CAP_PROP_FPS, 30)
     if not cap.isOpened():
-        raise RuntimeError("No pude abrir la cámara. Revisa permisos o CAM_INDEX.")
+        raise RuntimeError("No pude abrir la camara. Revisa permisos o CAM_INDEX.")
 
-    player_name = load_name()
+    # Name
+    saved = load_name()
+    player_name = saved.strip()
     buf = player_name
 
     # Match vars
@@ -317,6 +326,7 @@ def main():
     wins_ai = 0
     round_idx = 1
 
+    # IA vars
     gesture_hist = deque(maxlen=HIST_GESTURE)
     last_ai_send = 0.0
     last_latency_ms = None
@@ -327,10 +337,9 @@ def main():
     frozen_player = None
     frozen_ai = None
     frozen_result = None
-    freeze_until = 0.0  # <- FIX para que no rebote
+    freeze_until = 0.0
 
-    # State
-    state = STATE_NAME
+    state = STATE_START
 
     def reset_round():
         nonlocal phase, phase_start, frozen_player, frozen_ai, frozen_result, freeze_until
@@ -354,173 +363,266 @@ def main():
 
     reset_match()
 
+    # Para que ENTER no se repita raro (si lo mantienes apretado)
+    enter_lock = False
+
     while True:
         ok, cam = cap.read()
         if not ok or cam is None:
             continue
+
         cam = cv2.flip(cam, 1)
         cam = cv2.resize(cam, (CAM_W, CAM_H))
         h, w = cam.shape[:2]
 
         key = cv2.waitKey(1) & 0xFF
+
         if key == 27:
             break
 
+        # ENTER lock
+        if key in (13, 10):
+            if enter_lock:
+                key = 0
+            else:
+                enter_lock = True
+        else:
+            enter_lock = False
+
         # =========================
-        # STATE: NAME (tu pantalla bonita)
+        # START
         # =========================
-        if state == STATE_NAME:
-            # usamos fondo MENU si existe, si no, un fondo oscuro
-            frame = np.zeros_like(cam)
-            if img_menu is not None:
-                bg = cv2.resize(img_menu, (w, h), interpolation=cv2.INTER_AREA)
+        if state == STATE_START:
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            if img_start is not None:
+                bg = cv2.resize(img_start, (w, h), interpolation=cv2.INTER_AREA)
                 if bg.shape[2] == 4:
-                    frame[:] = 20
+                    frame[:] = 0
                     alpha_blit(frame, bg, 0, 0, w, h)
                 else:
                     frame = bg
             else:
-                frame[:] = (40, 30, 40)
+                frame[:] = (30, 30, 40)
+                draw_text(frame, "PIEDRA PAPEL TIJERA", int(w*0.18), int(h*0.30), 2.0)
 
-            # caja input
-            draw_text(frame, "Escribe tu nombre y ENTER para iniciar", int(w*0.18), int(h*0.25), scale=1.0, color=(255,255,255), thick=2)
-
-            x1, y1 = int(w*0.18), int(h*0.33)
-            x2, y2 = int(w*0.82), int(h*0.43)
-            cv2.rectangle(frame, (x1,y1), (x2,y2), (0,0,0), -1)
-            cv2.rectangle(frame, (x1,y1), (x2,y2), (255,255,255), 2)
-
-            draw_text(frame, f"{buf}_", x1+20, y2-20, scale=1.2, color=(255, 230, 140), thick=2)
-
-            draw_text(frame, "ENTER iniciar | ESC salir | Backspace borrar", int(w*0.18), int(h*0.92), scale=0.9, color=(255,255,255), thick=2)
+            draw_text(frame, "ENTER CONTINUAR", int(w*0.36), int(h*0.82), 1.2)
+            draw_text(frame, "ESC SALIR", int(w*0.42), int(h*0.90), 1.0)
 
             cv2.imshow(WIN, frame)
 
             if key in (13, 10):
-                player_name = (buf.strip() or "PLAYER")
-                save_name(player_name)
-                state = STATE_READY
-                # prepara transición limpia
-                ready_t0 = time.time()
+                state = STATE_NAME
+                if not buf:
+                    buf = ""
+            continue
+
+        # =========================
+        # NAME (obligatoria)
+        # =========================
+        if state == STATE_NAME:
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            if img_name is not None:
+                bg = cv2.resize(img_name, (w, h), interpolation=cv2.INTER_AREA)
+                if bg.shape[2] == 4:
+                    frame[:] = 0
+                    alpha_blit(frame, bg, 0, 0, w, h)
+                else:
+                    frame = bg
+            else:
+                frame[:] = (60, 50, 70)
+
+            # Caja input
+            x1, y1 = int(w*0.20), int(h*0.44)
+            x2, y2 = int(w*0.80), int(h*0.54)
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0,0,0), -1)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255,255,255), 2)
+
+            draw_text(frame, "ESCRIBE TU NOMBRE (OBLIGATORIO)", int(w*0.20), int(h*0.36), 1.0)
+            draw_text(frame, f"{buf}_", x1 + 18, y2 - 18, 1.4, (255, 230, 140), 2)
+
+            draw_text(frame, "ENTER CONTINUAR | Q INICIO | ESC SALIR", int(w*0.18), int(h*0.92), 0.9)
+
+            if not buf.strip():
+                draw_text(frame, "NO PUEDE ESTAR VACIO", int(w*0.34), int(h*0.62), 1.0, (0, 70, 255), 2)
+
+            cv2.imshow(WIN, frame)
+
+            if key in (ord("q"), ord("Q")):
+                state = STATE_START
             elif key in (8, 127):
                 buf = buf[:-1]
+            elif key in (13, 10):
+                if buf.strip():
+                    player_name = buf.strip()
+                    save_name(player_name)
+                    state = STATE_RULES
             elif 32 <= key <= 126:
                 if len(buf) < 16:
                     buf += chr(key)
             continue
 
         # =========================
-        # STATE: READY / LETSGO (solo 1 vez)
+        # RULES
         # =========================
-        if state == STATE_READY:
-            frame = np.zeros_like(cam)
-            if img_ready is not None:
-                bg = cv2.resize(img_ready, (w, h), interpolation=cv2.INTER_AREA)
+        if state == STATE_RULES:
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            if img_rules is not None:
+                bg = cv2.resize(img_rules, (w, h), interpolation=cv2.INTER_AREA)
                 if bg.shape[2] == 4:
                     frame[:] = 0
                     alpha_blit(frame, bg, 0, 0, w, h)
                 else:
                     frame = bg
             else:
-                frame[:] = (25, 25, 25)
-                draw_text(frame, "ARE YOU READY?", int(w*0.30), int(h*0.50), scale=2.0, color=(255,255,255), thick=3)
+                frame[:] = (20, 20, 20)
+                draw_text(frame, "REGLAS", int(w*0.42), int(h*0.25), 2.0)
 
+            draw_text(frame, "ENTER CONTINUAR | Q INICIO", int(w*0.30), int(h*0.92), 1.0)
             cv2.imshow(WIN, frame)
 
-            # pasa automático a LETSGO después de 0.9s (sin que vuelva luego)
-            if time.time() - ready_t0 >= 0.9:
-                state = STATE_LETSGO
-                lets_t0 = time.time()
+            if key in (ord("q"), ord("Q")):
+                state = STATE_START
+            elif key in (13, 10):
+                state = STATE_HANDPOS
             continue
 
-        if state == STATE_LETSGO:
-            frame = np.zeros_like(cam)
-            if img_letsgo is not None:
-                bg = cv2.resize(img_letsgo, (w, h), interpolation=cv2.INTER_AREA)
+        # =========================
+        # HAND POSITION
+        # =========================
+        if state == STATE_HANDPOS:
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            if img_handpos is not None:
+                bg = cv2.resize(img_handpos, (w, h), interpolation=cv2.INTER_AREA)
                 if bg.shape[2] == 4:
                     frame[:] = 0
                     alpha_blit(frame, bg, 0, 0, w, h)
                 else:
                     frame = bg
             else:
-                frame[:] = (30, 30, 30)
-                draw_text(frame, "LET'S GO!", int(w*0.35), int(h*0.50), scale=2.2, color=(255,255,255), thick=3)
+                frame[:] = (10, 10, 10)
+                draw_text(frame, "MANO APUNTANDO HACIA ARRIBA", int(w*0.16), int(h*0.45), 1.4)
 
+            draw_text(frame, "ENTER CONTINUAR | Q INICIO", int(w*0.30), int(h*0.92), 1.0)
             cv2.imshow(WIN, frame)
 
-            # pasa automático a PLAY después de 0.9s
-            if time.time() - lets_t0 >= 0.9:
-                state = STATE_PLAY
+            if key in (ord("q"), ord("Q")):
+                state = STATE_START
+            elif key in (13, 10):
+                state = STATE_LISTO
+            continue
+
+        # =========================
+        # LISTO
+        # =========================
+        if state == STATE_LISTO:
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            if img_listo is not None:
+                bg = cv2.resize(img_listo, (w, h), interpolation=cv2.INTER_AREA)
+                if bg.shape[2] == 4:
+                    frame[:] = 0
+                    alpha_blit(frame, bg, 0, 0, w, h)
+                else:
+                    frame = bg
+            else:
+                frame[:] = (40, 40, 40)
+                draw_text(frame, "LISTO?", int(w*0.42), int(h*0.45), 2.4)
+
+            draw_text(frame, "ENTER JUGAR | Q INICIO", int(w*0.34), int(h*0.92), 1.0)
+            cv2.imshow(WIN, frame)
+
+            if key in (ord("q"), ord("Q")):
+                state = STATE_START
+            elif key in (13, 10):
                 reset_match()
+                state = STATE_PLAY
             continue
 
         # =========================
-        # STATE: PLAY (nunca vuelve a READY/LETSGO)
+        # PLAY
         # =========================
         if state == STATE_PLAY:
-            # base frame: tu fondo "game"
-            frame = np.zeros_like(cam)
-            if img_game is not None:
-                bg = cv2.resize(img_game, (w, h), interpolation=cv2.INTER_AREA)
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            if img_game_bg is not None:
+                bg = cv2.resize(img_game_bg, (w, h), interpolation=cv2.INTER_AREA)
                 if bg.shape[2] == 4:
                     frame[:] = 0
                     alpha_blit(frame, bg, 0, 0, w, h)
                 else:
                     frame = bg
             else:
-                frame[:] = (255, 140, 200)
+                frame[:] = (190, 200, 255)
 
-            # camera box centrada (para que no salga “champú” raro)
-            cam_box_w = int(w * 0.62)
-            cam_box_h = int(h * 0.52)
-            cam_x1 = (w - cam_box_w)//2
-            cam_y1 = int(h * 0.18)
+            # Layout boxes (como tu captura)
+            cam_box_w = int(w * 0.63)
+            cam_box_h = int(h * 0.54)
+            cam_x1 = int(w * 0.08)
+            cam_y1 = int(h * 0.17)
             cam_x2 = cam_x1 + cam_box_w
             cam_y2 = cam_y1 + cam_box_h
 
-            # borde
-            cv2.rectangle(frame, (cam_x1-4, cam_y1-4), (cam_x2+4, cam_y2+4), (0,0,0), -1)
-            cv2.rectangle(frame, (cam_x1-2, cam_y1-2), (cam_x2+2, cam_y2+2), (255,255,255), 2)
+            ai_box_w = int(w * 0.22)
+            ai_box_h = cam_box_h
+            ai_x1 = cam_x2 + int(w * 0.03)
+            ai_y1 = cam_y1
+            ai_x2 = ai_x1 + ai_box_w
+            ai_y2 = ai_y1 + ai_box_h
 
+            # Bordes limpios
+            cv2.rectangle(frame, (cam_x1-3, cam_y1-3), (cam_x2+3, cam_y2+3), (0,0,0), -1)
+            cv2.rectangle(frame, (cam_x1-1, cam_y1-1), (cam_x2+1, cam_y2+1), (255,255,255), 2)
+
+            cv2.rectangle(frame, (ai_x1-3, ai_y1-3), (ai_x2+3, ai_y2+3), (0,0,0), -1)
+            cv2.rectangle(frame, (ai_x1-1, ai_y1-1), (ai_x2+1, ai_y2+1), (255,255,255), 2)
+
+            # Pegar camara
             cam_small = cv2.resize(cam, (cam_box_w, cam_box_h))
             frame[cam_y1:cam_y2, cam_x1:cam_x2] = cam_small
 
-            # inference loop (solo si no estamos congelados)
             now = time.time()
             lm = None
+            rps_ai = None
 
+            # session_id estable
+            sid = f"rps_{player_name}"
+
+            # Inference (si no estamos congelados)
             if now >= freeze_until and (now - last_ai_send >= ai_every):
                 last_ai_send = now
-                lm, lat = infer_hand_landmarks(cam)
+                lm, rps_ai, lat = infer_from_ai(cam, session_id=sid)
                 if lat is not None:
                     last_latency_ms = lat
-                g = classify_rps(lm)
-                gesture_hist.append(g)
 
-            # dibujar landmarks encima de la cámara (si hay)
+                # normalizar rps recibido
+                if rps_ai not in ("rock", "paper", "scissors"):
+                    rps_ai = None
+                gesture_hist.append(rps_ai if rps_ai else "none")
+
+            # Dibuja landmarks
             if lm is not None:
-                # dibujamos en cam_small -> convertimos coords normalizadas al box
-                # (más simple: dibujamos sobre una copia y volvemos a pegar)
-                tmp = cam_small.copy()
+                tmp = frame[cam_y1:cam_y2, cam_x1:cam_x2].copy()
                 draw_landmarks(tmp, lm, color=(0, 0, 255))
                 frame[cam_y1:cam_y2, cam_x1:cam_x2] = tmp
 
-            # scoreboard (colores legibles)
-            draw_text(frame, f"{player_name}: {wins_p}", int(w*0.06), int(h*0.10), scale=1.25, color=(255,255,255), thick=2)
-            draw_text(frame, f"Ronda {round_idx}/{BEST_OF}", int(w*0.42), int(h*0.10), scale=1.10, color=(255,255,255), thick=2)
-            draw_text(frame, f"IA: {wins_ai}", int(w*0.86), int(h*0.10), scale=1.25, color=(255,255,255), thick=2)
+            # HUD arriba
+            draw_text(frame, f"{player_name}: {wins_p}", int(w*0.06), int(h*0.10), 1.25)
+            draw_text(frame, f"RONDA {round_idx}/{BEST_OF}", int(w*0.42), int(h*0.10), 1.10)
+            draw_text(frame, f"IA: {wins_ai}", int(w*0.86), int(h*0.10), 1.25)
 
             if last_latency_ms is not None:
-                draw_text(frame, f"IA {int(last_latency_ms)}ms", int(w*0.78), int(h*0.06), scale=0.85, color=(255,255,255), thick=2)
+                draw_text(frame, f"{int(last_latency_ms)}ms", int(w*0.90), int(h*0.06), 0.9)
 
-            # fases timing
+            # Player label en esquina de camara (lo que saco)
+            current_player = stable_gesture(gesture_hist)
+            draw_text(frame, f"{player_name}: {NAMEG.get(current_player,'SIN MANO')}", cam_x1 + 10, cam_y1 + 28, 0.9)
+
+            # Texto IA ELIGIO arriba del cuadro derecho
+            draw_text(frame, "IA ELIGIO", ai_x1 + 8, ai_y1 - 10, 0.9)
+
+            # Fases / control de congelado
             elapsed = now - phase_start
 
-            if now < freeze_until:
-                # aún congelado, solo mostrar
-                pass
-            else:
-                # avanzar fase normalmente
+            if now >= freeze_until:
                 if phase == "ready" and elapsed >= PHASE_READY:
                     phase = "one"; phase_start = now
                 elif phase == "one" and elapsed >= PHASE_1:
@@ -530,7 +632,6 @@ def main():
                 elif phase == "three" and elapsed >= PHASE_3:
                     phase = "go"; phase_start = now
                 elif phase == "go" and elapsed >= PHASE_GO:
-                    # FREEZE (FIX)
                     frozen_player = stable_gesture(gesture_hist)
                     frozen_ai = random.choice(GESTURES)
                     frozen_result = decide_winner(frozen_player, frozen_ai)
@@ -540,14 +641,13 @@ def main():
                     elif frozen_result == "ai":
                         wins_ai += 1
 
-                    phase = "show"; phase_start = now
-                    freeze_until = now + PHASE_SHOW  # <- evita rebote
+                    phase = "show"
+                    phase_start = now
+                    freeze_until = now + PHASE_SHOW
 
                 elif phase == "show" and elapsed >= PHASE_SHOW:
-                    # siguiente ronda / terminar
                     if match_done():
                         state = STATE_GAMEOVER
-                        # guarda score solo una vez aquí
                         score = wins_p * 100
                         extra = {"wins_player": wins_p, "wins_ai": wins_ai, "best_of": BEST_OF}
                         send_score(player_name, score, extra=extra)
@@ -555,57 +655,77 @@ def main():
                         round_idx += 1
                         reset_round()
 
-            # overlays de fase (sin ???)
-            def center_big(text, y, color):
-                draw_text(frame, text, int(w*0.25), y, scale=2.0, color=color, thick=3)
+            # Mostrar imagen IA en el cuadro (llenando)
+            ai_to_show = None
+            if phase == "show" and frozen_ai in ("rock", "paper", "scissors"):
+                ai_to_show = frozen_ai
+            # si no estamos en show, puedes mostrar la ultima prediccion estable del historial:
+            if ai_to_show is None:
+                # si quieres, deja el cuadro vacio hasta show:
+                ai_to_show = None
+
+            if ai_to_show is not None and ai_imgs.get(ai_to_show) is not None:
+                img = ai_imgs[ai_to_show]
+                # llenar el cuadro completo
+                alpha_blit(frame, img, ai_x1, ai_y1, ai_box_w, ai_box_h)
+            else:
+                # cuadro limpio (negro) ya esta, no pongas texto adentro
+                pass
+
+            # Mensaje de fase (sin tildes para que no salgan ??)
+            def center_big(text, y):
+                draw_text(frame, text, int(w*0.33), y, 2.0)
 
             if phase == "ready":
-                center_big("ALÍSTATE…", int(h*0.60), (255,255,255))
-                draw_text(frame, "Pon tu mano frente a la cámara", int(w*0.28), int(h*0.67), scale=1.0, color=(255,255,255), thick=2)
+                center_big("ALISTATE", int(h*0.60))
             elif phase == "one":
-                center_big("1  PIEDRA", int(h*0.60), (255,255,255))
+                center_big("1  PIEDRA", int(h*0.60))
             elif phase == "two":
-                center_big("2  PAPEL", int(h*0.60), (255,255,255))
+                center_big("2  PAPEL", int(h*0.60))
             elif phase == "three":
-                center_big("3  TIJERA", int(h*0.60), (255,255,255))
+                center_big("3  TIJERA", int(h*0.60))
             elif phase == "go":
-                center_big("¡YA!", int(h*0.60), (255,255,255))
+                center_big("YA!", int(h*0.60))
             elif phase == "show":
-                pm = frozen_player or "none"
-                am = frozen_ai or "rock"
-                res = frozen_result or "tie"
-
-                draw_text(frame, f"Tú: {EMOJI.get(pm)}  {NAMEG.get(pm)}", int(w*0.10), int(h*0.83), scale=1.2, color=(255,255,255), thick=2)
-                draw_text(frame, f"IA: {EMOJI.get(am)}  {NAMEG.get(am)}", int(w*0.55), int(h*0.83), scale=1.2, color=(255,255,255), thick=2)
-
-                if res == "player":
+                # QUIEN GANO (bien marcado)
+                if frozen_result == "player":
                     msg = f"PUNTO PARA {player_name}"
-                elif res == "ai":
+                elif frozen_result == "ai":
                     msg = "PUNTO PARA LA IA"
                 else:
                     msg = "EMPATE"
-                draw_text(frame, msg, int(w*0.22), int(h*0.93), scale=1.4, color=(255,255,255), thick=3)
 
-            # controls
-            draw_text(frame, "ESC salir | R reiniciar | N nombre", int(w*0.08), int(h*0.98), scale=0.85, color=(255,255,255), thick=2)
+                # banner inferior chevere
+                cv2.rectangle(frame, (int(w*0.10), int(h*0.76)), (int(w*0.90), int(h*0.83)), (0,0,0), -1)
+                cv2.rectangle(frame, (int(w*0.10), int(h*0.76)), (int(w*0.90), int(h*0.83)), (255,255,255), 2)
+                draw_text(frame, msg, int(w*0.22), int(h*0.81), 1.35)
+
+            # Instruccion (mas arriba que botones)
+            #draw_text(frame, "LEVANTA LA MANO Y MANTEN EL GESTO", int(w*0.27), int(h*0.80), 0.95)
+
+            # Controles
+            #draw_text(frame, "R REINICIAR | Q INICIO | N NOMBRE | ESC SALIR", int(w*0.18), int(h*0.97), 0.85)
 
             cv2.imshow(WIN, frame)
 
-            if key in (ord("n"), ord("N")):
+            # Keys en juego
+            if key in (ord("q"), ord("Q")):
+                state = STATE_START
+            elif key in (ord("n"), ord("N")):
                 state = STATE_NAME
                 buf = player_name
-            if key in (ord("r"), ord("R")):
+            elif key in (ord("r"), ord("R")):
                 reset_match()
 
             continue
 
         # =========================
-        # STATE: GAMEOVER (tu imagen bonita)
+        # GAME OVER
         # =========================
         if state == STATE_GAMEOVER:
             frame = np.zeros((h, w, 3), dtype=np.uint8)
-            if img_gameover is not None:
-                bg = cv2.resize(img_gameover, (w, h), interpolation=cv2.INTER_AREA)
+            if img_gameover_bg is not None:
+                bg = cv2.resize(img_gameover_bg, (w, h), interpolation=cv2.INTER_AREA)
                 if bg.shape[2] == 4:
                     frame[:] = 0
                     alpha_blit(frame, bg, 0, 0, w, h)
@@ -621,25 +741,31 @@ def main():
             else:
                 title = "EMPATE"
 
-            draw_text(frame, "RESULTADO FINAL", int(w*0.30), int(h*0.22), scale=1.4, color=(255,255,255), thick=3)
-            draw_text(frame, title, int(w*0.25), int(h*0.35), scale=1.8, color=(255,255,255), thick=4)
-            draw_text(frame, f"{player_name} {wins_p}  -  {wins_ai} IA", int(w*0.30), int(h*0.50), scale=1.2, color=(255,255,255), thick=3)
-            draw_text(frame, f"Score guardado: {wins_p*100}", int(w*0.32), int(h*0.62), scale=1.1, color=(255,255,255), thick=2)
+            total_score = wins_p * 100
 
-            draw_text(frame, "R reiniciar | N nombre | ESC salir", int(w*0.22), int(h*0.92), scale=1.0, color=(255,255,255), thick=2)
+           # draw_text(frame, "RESULTADO FINAL", int(w*0.30), int(h*0.20), 1.6)
+            draw_text(frame, title, int(w*0.25), int(h*0.35), 2.0)
+            draw_text(frame, f"{player_name} {wins_p}  -  {wins_ai} IA", int(w*0.30), int(h*0.50), 1.3)
+            draw_text(frame, f"TOTAL SCORE: {total_score}", int(w*0.33), int(h*0.62), 1.3)
+
+            draw_text(frame, "R REINICIAR | Q INICIO | N NOMBRE | ESC SALIR", int(w*0.17), int(h*0.92), 1.0)
 
             cv2.imshow(WIN, frame)
 
-            if key in (ord("r"), ord("R")):
-                state = STATE_PLAY
-                reset_match()
-            if key in (ord("n"), ord("N")):
+            if key in (ord("q"), ord("Q")):
+                state = STATE_START
+            elif key in (ord("n"), ord("N")):
                 state = STATE_NAME
                 buf = player_name
+            elif key in (ord("r"), ord("R")):
+                reset_match()
+                state = STATE_PLAY
+
             continue
 
     cap.release()
     cv2.destroyAllWindows()
+    music_stop()
 
 if __name__ == "__main__":
     main()
