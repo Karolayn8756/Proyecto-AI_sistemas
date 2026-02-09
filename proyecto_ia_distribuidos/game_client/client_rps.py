@@ -21,6 +21,7 @@ except Exception:
     pygame = None
     PYGAME_OK = False
 
+
 # =========================
 # URLs
 # =========================
@@ -66,7 +67,9 @@ IMG_HANDPOS = "tu mano debe estar.png"
 IMG_LISTO = "RPS_Listo.png"
 IMG_GAME_BG = "camara_ai.png"          # tu fondo del juego con los marcos
 IMG_GAMEOVER_BG = "RESULTADO_Final.png"
-MUSIC_FILE = "bg_music.mp3"
+
+MUSIC_FILE = "rps.mp3"
+BEEP_FILE = "BEEP.mp3"  # <-- ESTE ES EL QUE QUIERES
 
 IMG_AI_ROCK = "manopiedra.png"
 IMG_AI_PAPER = "manopapel.png"
@@ -169,6 +172,7 @@ def send_score(player, score, extra=None):
     except Exception:
         pass
 
+
 # =========================
 # IA parsing + hand draw
 # =========================
@@ -219,6 +223,7 @@ def draw_landmarks(frame_bgr, lm, color=(0, 0, 255)):
     for (x, y) in pts:
         cv2.circle(frame_bgr, (x, y), 6, color, -1, cv2.LINE_AA)
 
+
 # =========================
 # RPS logic
 # =========================
@@ -244,6 +249,7 @@ def stable_gesture(hist: deque):
         return "none"
     return max(set(vals), key=vals.count)
 
+
 # =========================
 # States
 # =========================
@@ -258,19 +264,32 @@ STATE_GAMEOVER = "gameover"
 def needed_wins():
     return (BEST_OF // 2) + 1
 
+
 # =========================
-# Music
+# Music (BG + Beep)
 # =========================
+BEEP_CHANNEL = None
+
 def music_start(asset_dir):
+    """Arranca música de fondo con volumen moderado."""
+    global BEEP_CHANNEL
     if not PYGAME_OK:
         return
+
     try:
-        pygame.mixer.init()
+        # Pre-init para menos delay en sonidos
+        pygame.mixer.pre_init(44100, -16, 2, 256)
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+
+        pygame.mixer.set_num_channels(8)
+        BEEP_CHANNEL = pygame.mixer.Channel(1)
+
         music_path = os.path.join(asset_dir, MUSIC_FILE)
         if os.path.exists(music_path):
             pygame.mixer.music.load(music_path)
-            pygame.mixer.music.set_volume(0.45)
-            pygame.mixer.music.play(-1)  # loop
+            pygame.mixer.music.set_volume(0.22)  # <-- BAJAMOS la música para oír el beep
+            pygame.mixer.music.play(-1)
     except Exception:
         pass
 
@@ -281,6 +300,37 @@ def music_stop():
         pygame.mixer.music.stop()
     except Exception:
         pass
+
+def load_beep(asset_dir):
+    """Carga el beep como Sound (no interrumpe la música)."""
+    if not PYGAME_OK:
+        return None
+    try:
+        beep_path = os.path.join(asset_dir, BEEP_FILE)
+        if os.path.exists(beep_path):
+            s = pygame.mixer.Sound(beep_path)
+            s.set_volume(1.0)  # <-- BEEP FUERTE
+            return s
+    except Exception:
+        pass
+    return None
+
+def beep_play(beep_sound):
+    """Reproduce el beep 1 vez, usando canal dedicado."""
+    global BEEP_CHANNEL
+    if not PYGAME_OK or beep_sound is None:
+        return
+    try:
+        if BEEP_CHANNEL is not None:
+            # evita que se encime feo: corta el beep anterior y vuelve a sonar
+            if BEEP_CHANNEL.get_busy():
+                BEEP_CHANNEL.stop()
+            BEEP_CHANNEL.play(beep_sound)
+        else:
+            beep_sound.play()
+    except Exception:
+        pass
+
 
 # =========================
 # Main
@@ -305,8 +355,9 @@ def main():
         "scissors": img_ai_scissors,
     }
 
-    # Start music
+    # Start music + beep
     music_start(ASSET_DIR)
+    beep_sound = load_beep(ASSET_DIR)
 
     # Camera
     cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
@@ -431,7 +482,6 @@ def main():
             else:
                 frame[:] = (60, 50, 70)
 
-            # Caja input
             x1, y1 = int(w*0.20), int(h*0.44)
             x2, y2 = int(w*0.80), int(h*0.54)
 
@@ -553,7 +603,7 @@ def main():
             else:
                 frame[:] = (190, 200, 255)
 
-            # Layout boxes (como tu captura)
+            # Layout boxes
             cam_box_w = int(w * 0.63)
             cam_box_h = int(h * 0.54)
             cam_x1 = int(w * 0.08)
@@ -568,7 +618,7 @@ def main():
             ai_x2 = ai_x1 + ai_box_w
             ai_y2 = ai_y1 + ai_box_h
 
-            # Bordes limpios
+            # Bordes
             cv2.rectangle(frame, (cam_x1-3, cam_y1-3), (cam_x2+3, cam_y2+3), (0,0,0), -1)
             cv2.rectangle(frame, (cam_x1-1, cam_y1-1), (cam_x2+1, cam_y2+1), (255,255,255), 2)
 
@@ -583,17 +633,15 @@ def main():
             lm = None
             rps_ai = None
 
-            # session_id estable
             sid = f"rps_{player_name}"
 
-            # Inference (si no estamos congelados)
+            # Inference
             if now >= freeze_until and (now - last_ai_send >= ai_every):
                 last_ai_send = now
                 lm, rps_ai, lat = infer_from_ai(cam, session_id=sid)
                 if lat is not None:
                     last_latency_ms = lat
 
-                # normalizar rps recibido
                 if rps_ai not in ("rock", "paper", "scissors"):
                     rps_ai = None
                 gesture_hist.append(rps_ai if rps_ai else "none")
@@ -604,7 +652,7 @@ def main():
                 draw_landmarks(tmp, lm, color=(0, 0, 255))
                 frame[cam_y1:cam_y2, cam_x1:cam_x2] = tmp
 
-            # HUD arriba
+            # HUD
             draw_text(frame, f"{player_name}: {wins_p}", int(w*0.06), int(h*0.10), 1.25)
             draw_text(frame, f"RONDA {round_idx}/{BEST_OF}", int(w*0.42), int(h*0.10), 1.10)
             draw_text(frame, f"IA: {wins_ai}", int(w*0.86), int(h*0.10), 1.25)
@@ -612,25 +660,28 @@ def main():
             if last_latency_ms is not None:
                 draw_text(frame, f"{int(last_latency_ms)}ms", int(w*0.90), int(h*0.06), 0.9)
 
-            # Player label en esquina de camara (lo que saco)
             current_player = stable_gesture(gesture_hist)
-            draw_text(frame, f"{player_name}: {NAMEG.get(current_player,'SIN MANO')}", cam_x1 + 10, cam_y1 + 28, 0.9)
+            draw_text(frame, f"{player_name}: {NAMEG.get(current_player,'SIN MANO')}",
+                      cam_x1 + 10, cam_y1 + 28, 0.9)
 
-            # Texto IA ELIGIO arriba del cuadro derecho
             draw_text(frame, "IA ELIGIO", ai_x1 + 8, ai_y1 - 10, 0.9)
 
-            # Fases / control de congelado
+            # --------- CONTEO + BEEP (ARREGLADO) ----------
             elapsed = now - phase_start
 
             if now >= freeze_until:
                 if phase == "ready" and elapsed >= PHASE_READY:
                     phase = "one"; phase_start = now
+                    beep_play(beep_sound)
                 elif phase == "one" and elapsed >= PHASE_1:
                     phase = "two"; phase_start = now
+                    beep_play(beep_sound)
                 elif phase == "two" and elapsed >= PHASE_2:
                     phase = "three"; phase_start = now
+                    beep_play(beep_sound)
                 elif phase == "three" and elapsed >= PHASE_3:
                     phase = "go"; phase_start = now
+                    beep_play(beep_sound)
                 elif phase == "go" and elapsed >= PHASE_GO:
                     frozen_player = stable_gesture(gesture_hist)
                     frozen_ai = random.choice(GESTURES)
@@ -655,24 +706,10 @@ def main():
                         round_idx += 1
                         reset_round()
 
-            # Mostrar imagen IA en el cuadro (llenando)
-            ai_to_show = None
-            if phase == "show" and frozen_ai in ("rock", "paper", "scissors"):
-                ai_to_show = frozen_ai
-            # si no estamos en show, puedes mostrar la ultima prediccion estable del historial:
-            if ai_to_show is None:
-                # si quieres, deja el cuadro vacio hasta show:
-                ai_to_show = None
+            # IA image (solo en show)
+            if phase == "show" and frozen_ai in ("rock", "paper", "scissors") and ai_imgs.get(frozen_ai) is not None:
+                alpha_blit(frame, ai_imgs[frozen_ai], ai_x1, ai_y1, ai_box_w, ai_box_h)
 
-            if ai_to_show is not None and ai_imgs.get(ai_to_show) is not None:
-                img = ai_imgs[ai_to_show]
-                # llenar el cuadro completo
-                alpha_blit(frame, img, ai_x1, ai_y1, ai_box_w, ai_box_h)
-            else:
-                # cuadro limpio (negro) ya esta, no pongas texto adentro
-                pass
-
-            # Mensaje de fase (sin tildes para que no salgan ??)
             def center_big(text, y):
                 draw_text(frame, text, int(w*0.33), y, 2.0)
 
@@ -687,7 +724,6 @@ def main():
             elif phase == "go":
                 center_big("YA!", int(h*0.60))
             elif phase == "show":
-                # QUIEN GANO (bien marcado)
                 if frozen_result == "player":
                     msg = f"PUNTO PARA {player_name}"
                 elif frozen_result == "ai":
@@ -695,20 +731,12 @@ def main():
                 else:
                     msg = "EMPATE"
 
-                # banner inferior chevere
                 cv2.rectangle(frame, (int(w*0.10), int(h*0.76)), (int(w*0.90), int(h*0.83)), (0,0,0), -1)
                 cv2.rectangle(frame, (int(w*0.10), int(h*0.76)), (int(w*0.90), int(h*0.83)), (255,255,255), 2)
                 draw_text(frame, msg, int(w*0.22), int(h*0.81), 1.35)
 
-            # Instruccion (mas arriba que botones)
-            #draw_text(frame, "LEVANTA LA MANO Y MANTEN EL GESTO", int(w*0.27), int(h*0.80), 0.95)
-
-            # Controles
-            #draw_text(frame, "R REINICIAR | Q INICIO | N NOMBRE | ESC SALIR", int(w*0.18), int(h*0.97), 0.85)
-
             cv2.imshow(WIN, frame)
 
-            # Keys en juego
             if key in (ord("q"), ord("Q")):
                 state = STATE_START
             elif key in (ord("n"), ord("N")):
@@ -743,7 +771,6 @@ def main():
 
             total_score = wins_p * 100
 
-           # draw_text(frame, "RESULTADO FINAL", int(w*0.30), int(h*0.20), 1.6)
             draw_text(frame, title, int(w*0.25), int(h*0.35), 2.0)
             draw_text(frame, f"{player_name} {wins_p}  -  {wins_ai} IA", int(w*0.30), int(h*0.50), 1.3)
             draw_text(frame, f"TOTAL SCORE: {total_score}", int(w*0.33), int(h*0.62), 1.3)
